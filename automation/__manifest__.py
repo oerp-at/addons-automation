@@ -11,7 +11,7 @@
         'funkring',
     ],
     'depends': [
-        '',
+        'util_time',
     ],
     'external_dependencies': {
         'python': [
