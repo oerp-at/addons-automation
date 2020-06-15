@@ -1,23 +1,17 @@
 # -*- coding: utf-8 -*--
 # License AGPL-3.0 or later (http://www.gnu.org/licenses/agpl).
 
+import time
+import uuid
 import logging
 
-from odoo import api, fields, models
-
+from odoo import api, fields, models, SUPERUSER_ID, _
 
 _logger = logging.getLogger(__name__)
 
 
-def _list_all_models(self):
-    """ show all available odoo models """
-    self._cr.execute("SELECT model, name FROM ir_model ORDER BY name")
-    return self._cr.fetchall()
-
-
 class TaskLogger:
     """ Tasklogger is a helper class for logging to logger """
-
     def __init__(self, name):
         self.logger = logging.getLogger(name)
         self.name = name
@@ -28,9 +22,14 @@ class TaskLogger:
         self.errors = 0
         self.warnings = 0
 
-    def log(
-        self, message, pri="i", obj=None, ref=None, progress=None, code=None, data=None
-    ):
+    def log(self,
+            message,
+            pri="i",
+            obj=None,
+            ref=None,
+            progress=None,
+            code=None,
+            data=None):
         if pri == "i":
             self.logger.info(message)
         elif pri == "e":
@@ -100,12 +99,19 @@ class TaskLogger:
         pass
 
 
-class AutomationTask(models.Model):    
+class AutomationTask(models.Model):
     _name = "automation.task"
     _description = "Automation Task"
     _order = "id asc"
 
-    name = fields.Char(required=True, readonly=True, states={"draft": [("readonly", False)]})
+    def _list_all_models(self):
+        """ show all available odoo models """
+        self._cr.execute("SELECT model, name FROM ir_model ORDER BY name")
+        return self._cr.fetchall()
+
+    name = fields.Char(required=True,
+                       readonly=True,
+                       states={"draft": [("readonly", False)]})
     state_change = fields.Datetime(
         required=True,
         readonly=True,
@@ -113,8 +119,7 @@ class AutomationTask(models.Model):
         default=lambda self: self.env["util.time"]._currentDateTime(),
     )
 
-    state = fields.Selection(
-        [
+    state = fields.Selection([
             ("draft", "Draft"),
             ("queued", "Queued"),
             ("run", "Running"),
@@ -126,13 +131,12 @@ class AutomationTask(models.Model):
         index=True,
         readonly=True,
         default="draft",
-        copy=False
-    )
+        copy=False)
 
     progress = fields.Float(readonly=True, compute="_compute_progress")
     error = fields.Text(readonly=True, copy=False)
     owner_id = fields.Many2one(
-        "res.users",        
+        "res.users",
         required=True,
         default=lambda self: self._uid,
         index=True,
@@ -141,9 +145,10 @@ class AutomationTask(models.Model):
 
     res_model = fields.Char("Resource Model", index=True, readonly=True)
     res_id = fields.Integer("Resource ID", index=True, readonly=True)
-    res_ref = fields.Reference(
-        _list_all_models, string="Resource", compute="_res_ref", readonly=True
-    )
+    res_ref = fields.Reference(_list_all_models,
+                               string="Resource",
+                               compute="_compute_res_ref",
+                               readonly=True)
     cron_id = fields.Many2one(
         "ir.cron",
         "Scheduled Job",
@@ -162,28 +167,32 @@ class AutomationTask(models.Model):
     start_after_task_id = fields.Many2one(
         "automation.task",
         "Start after task",
-        help="Start *this* task after the specified task, was set to null after run state is set.",
         readonly=True,
+        index=True,
         ondelete="restrict",
+        help="Start *this* task after the specified task, was set to null after run state is set."
     )
-    start_after = fields.Datetime(help="Start *this* task after the specified date/time.")
-    
+    start_after = fields.Datetime(
+        help="Start *this* task after the specified date/time.")
+
+    puuid = fields.Char("Process UUID")
+
     def _task_id(self):
         for obj in self:
             self.task_id = obj
-    
+
     def _compute_progress(self):
         res = dict.fromkeys(self.ids, 0.0)
-        cr = self._cr
+        _cr = self._cr
 
         # search stages
-        cr.execute(
+        _cr.execute(
             "SELECT id FROM automation_task_stage WHERE task_id IN %s AND parent_id IS NULL",
-            (tuple(self.ids),),
+            (tuple(self.ids), ),
         )
 
         # get progress
-        stage_ids = [r[0] for r in cr.fetchall()]
+        stage_ids = [r[0] for r in _cr.fetchall()]
         for stage in self.env["automation.task.stage"].browse(stage_ids):
             res[stage.task_id.id] = stage.complete_progress
 
@@ -191,59 +200,67 @@ class AutomationTask(models.Model):
         for obj in self:
             obj.progress = res[obj.id]
 
-    @api.one
-    def _res_ref(self):
-        if self.res_model and self.res_id:
-            res = self.env[self.res_model].search_count([("id", "=", self.res_id)])
-            if res:
-                self.res_ref = "%s,%s" % (self.res_model, self.res_id)
-            else:
-                self.res_ref = None
-        else:
-            self.res_ref = None
+    def _compute_res_ref(self):
+        _cr = self._cr
+        _cr.execute(
+            """SELECT res_model, ARRAY_AGG(id)
+            FROM automation_task 
+            WHERE id IN %s
+        """, (tuple(self.ids), ))
 
-    @api.multi
+        values = {}
+        for res_model, task_ids in _cr.fetchall():
+            model_obj = self.env.get(res_model)
+            if model_obj:
+                table_name = model_obj._table
+                _cr.execute(
+                    """SELECT
+                        t.id, r.id
+                    FROM automation_task t
+                    LEFT JOIN %s r ON r.id = t.res_id
+                    WHERE t.id IN %%s
+                """ % table_name, (task_ids, ))
+
+                values.update(
+                    dict([(i, "%s,%s" % (res_model, r))
+                          for (i, r) in _cr.fetchall()]))
+
+        for obj in self:
+            obj.res_ref = values.get(obj.id, None)
+
     def _total_logs(self):
-        res = dict.fromkeys(self.ids, 0)
-        cr = self._cr
-        cr.execute(
+        _cr = self._cr
+        _cr.execute(
             "SELECT task_id, COUNT(*) FROM automation_task_log WHERE task_id IN %s GROUP BY 1",
-            (tuple(self.ids),),
-        )
-        for task_id, log_count in cr.fetchall():
-            res[task_id] = log_count
-        for r in self:
-            r.total_logs = res[r.id]
+            (tuple(self.ids), ))
+        values = dict(_cr.fetchall())
+        for obj in self:
+            obj.total_logs = values.get(obj.id) or 0
 
-    @api.multi
     def _total_warnings(self):
-        res = dict.fromkeys(self.ids, 0)
-        cr = self._cr
-        cr.execute(
+        _cr = self._cr
+        _cr.execute(
             "SELECT task_id, COUNT(*) FROM automation_task_log WHERE pri IN ('a','e','w','x') AND task_id IN %s GROUP BY 1",
-            (tuple(self.ids),),
-        )
-        for task_id, log_count in cr.fetchall():
-            res[task_id] = log_count
-        for r in self:
-            r.total_warnings = res[r.id]
+            (tuple(self.ids), ))
+        values = dict(_cr.fetchall())
+        for obj in self:
+            obj.total_logs = values.get(obj.id) or 0
 
-    @api.multi
     def _total_stages(self):
         res = dict.fromkeys(self.ids, 0)
-        cr = self._cr
-        cr.execute(
+        _cr = self._cr
+        _cr.execute(
             "SELECT task_id, COUNT(*) FROM automation_task_stage WHERE task_id IN %s GROUP BY 1",
-            (tuple(self.ids),),
+            (tuple(self.ids), ),
         )
-        for task_id, stage_count in cr.fetchall():
+        for task_id, stage_count in _cr.fetchall():
             res[task_id] = stage_count
         for r in self:
             r.total_stages = res[r.id]
 
-    @api.one
     def _run(self, taskc):
         """" Test Task """
+        self.ensure_one()
         for stage in range(1, 10):
             taskc.stage("Stage %s" % stage)
 
@@ -260,44 +277,52 @@ class AutomationTask(models.Model):
 
     def _task_get_list(self):
         self.ensure_one()
-        res = []
-        task = self
-        while task:
-            res.append(task.id)
-            task = task.after_once_task_id
-        return self.browse(res)
+        task_id = self.id
+        _cr = self._cr
+        _cr.execute("""WITH RECURSIVE subtasks AS ( 
+                SELECT
+                    id
+                FROM automation_task t
+                WHERE 
+                    id = %s
+                UNION
+                    SELECT
+                        t.id,
+                    FROM automation_task t
+                    INNER JOIN subtasks st ON st.start_after_task_id = t.id
+            ) 
+            SELECT %s
+            UNION
+            SELECT id FROM subtasks
+            """
+         , (task_id, task_id))
+        
+        task_ids = [r[0] for r in _cr.fetchall()]
+        return self.browse(task_ids)
 
     def _task_add_after_last(self, task):
         """ Add task after this """
+        self.ensure_one()
         if task:
-            self.ensure_one()
-
-            last_task = self
-            while last_task.after_once_task_id:
-                last_task = last_task.after_once_task_id
-
-            last_task.write({"after_once_task_id": task.id})
+            task.start_after_task_id = self._task_get_list()
 
     def _task_insert_after(self, task):
         """ Insert task after this"""
+        self.ensure_one()
         if task:
-            self.ensure_one()
-            task_after = self.after_once_task_id
-            self.write({"after_once_task_id": task.id})
-            task._add_after_last(task_after)
+            task.start_after_task_id = task
+            self.search([("start_after_task_id", "=", task.id)]).write({
+                "start_after_task_id": self.id
+            })            
 
     def _check_execution_rights(self):
         # check rights
         if self.owner_id.id != self._uid and not self.user_has_groups(
-            "automation.group_automation_manager,base.group_system"
-        ):
+                "automation.group_automation_manager,base.group_system"):
             raise Warning(
-                _(
-                    "Not allowed to start task. You be the owner or an automation manager"
-                )
-            )
+                _("Not allowed. You have to be the owner or an automation manager"
+            ))
 
-    @api.multi
     def action_cancel(self):
         for task in self:
             # check rights
@@ -305,50 +330,11 @@ class AutomationTask(models.Model):
             if task.state == "queued":
                 task.state = "cancel"
         return True
-
-    @api.multi
+    
     def action_refresh(self):
         return True
 
-    @api.multi
     def action_reset(self):
-        return True
-
-    @api.multi
-    def action_queue(self):
-
-        for task in self:
-            # check rights
-            task._check_execution_rights()
-            if task.state in ("draft", "cancel", "failed", "done"):
-                # sudo task
-                sudo_task = task.sudo()
-
-                # add cron entry
-                sudo_cron = sudo_task.cron_id
-                if not sudo_cron:
-                    sudo_cron = (
-                        self.env["ir.cron"].sudo().create(sudo_task._get_cron_values())
-                    )
-                else:
-                    sudo_cron.write(sudo_task._get_cron_values())
-
-                # set stages inactive
-                self._cr.execute(
-                    "DELETE FROM automation_task_stage WHERE task_id=%s",
-                    (sudo_task.id,),
-                )
-
-                # set queued
-                sudo_task.state = "queued"
-                sudo_task.error = None
-                sudo_task.cron_id = sudo_cron
-
-                # create secret
-                sudo_secret = self.env["automation.task.secret"].sudo()
-                if not sudo_secret.search([("task_id", "=", sudo_task.id)]):
-                    sudo_secret.create({"task_id": sudo_task.id})
-
         return True
 
     def _get_cron_values(self):
@@ -356,7 +342,7 @@ class AutomationTask(models.Model):
 
         # start after is set
         # use start_after date instead of next call
-        nextcall = util.currentDateTime()
+        nextcall = self.env["util.time"]._current_date_str()
         if nextcall < self.start_after:
             nextcall = self.start_after
 
@@ -376,15 +362,48 @@ class AutomationTask(models.Model):
             "task_id": self.id,
         }
 
+    def _task_enqueue(self):
+        """ queue task """
+        # add cron entry
+        cron = self.cron_id
+        if not cron:
+            cron = (self.env["ir.cron"].sudo().create(
+                self._get_cron_values()))
+        else:
+            cron.write(self._get_cron_values())
+
+        # set stages inactive
+        self._cr.execute(
+            "DELETE FROM automation_task_stage WHERE task_id=%s",
+            (self.id, ),
+        )
+
+        # set queued
+        self.state = "queued"
+        self.error = None
+        self.cron_id = cron
+        self.puuid = str(uuid.uuid4())
+
     @api.model
     def _cleanup_tasks(self):
         # clean up cron tasks
-        self._cr.execute("DELETE FROM ir_cron WHERE task_id IS NOT NULL AND NOT active")
+        self._cr.execute(
+            "DELETE FROM ir_cron WHERE task_id IS NOT NULL AND NOT active")
+        return True
+
+    def action_queue(self):
+        for task in self:
+            # check rights
+            task._check_execution_rights()
+            if task.state in ("draft", "cancel", "failed", "done"):
+                # sudo task
+                task.sudo()._task_enqueue()            
         return True
 
     @api.model
     def _process_task(self, task_id):
         task = self.browse(task_id)
+        date_obj = self.env["util.date"]
         if task and task.state == "queued":
             try:
                 # get options
@@ -414,33 +433,30 @@ class AutomationTask(models.Model):
                 if options.get("singleton"):
                     # cleanup
                     self._cr.execute(
-                        "DELETE FROM ir_cron WHERE task_id=%s AND id!=%s AND NOT active",
+                        "DELETE FROM ir_cron WHERE task_id = %s AND id != %s AND NOT active",
                         (task.id, task.cron_id.id),
                     )
                     # check concurrent
                     self._cr.execute(
                         "SELECT MIN(id) FROM automation_task WHERE res_model=%s AND state IN ('queued','run')",
-                        (resource._model._name,),
+                        (resource._model._name, ),
                     )
                     active_task_id = self._cr.fetchone()[0]
                     if active_task_id and active_task_id < task_id:
                         # requeue
                         task.cron_id = self.env["ir.cron"].create(
-                            task._get_cron_values()
-                        )
+                            task._get_cron_values())
                         return True
 
                 task_after_once = task.after_once_task_id
 
                 # change task state
                 # and commit
-                task.write(
-                    {
-                        "state_change": util.currentDateTime(),
-                        "state": "run",
-                        "error": None,
-                    }
-                )
+                task.write({
+                    "state_change": date_obj.cur,
+                    "state": "run",
+                    "error": None,
+                })
                 # commit after start
                 self._cr.commit()
 
@@ -457,14 +473,12 @@ class AutomationTask(models.Model):
                 taskc.close()
 
                 # update status
-                task.write(
-                    {
-                        "state_change": util.currentDateTime(),
-                        "state": "done",
-                        "error": None,
-                        "after_once_task_id": None,
-                    }
-                )
+                task.write({
+                    "state_change": util.currentDateTime(),
+                    "state": "done",
+                    "error": None,
+                    "after_once_task_id": None,
+                })
 
                 # commit after finish
                 self._cr.commit()
@@ -478,9 +492,9 @@ class AutomationTask(models.Model):
             except Exception as e:
                 # rollback on error
                 self._cr.rollback()
-                                
+
                 _logger.exception("Task execution failed")
-                task = self.browse(task_id) # reload task after rollback
+                task = self.browse(task_id)  # reload task after rollback
 
                 # securely try to get message
                 error = None
@@ -497,13 +511,11 @@ class AutomationTask(models.Model):
                     error = "Unexpected error, see logs"
 
                 # write error
-                task.write(
-                    {
-                        "state_change": util.currentDateTime(),
-                        "state": "failed",
-                        "error": error,
-                    }
-                )
+                task.write({
+                    "state_change": util.currentDateTime(),
+                    "state": "failed",
+                    "error": error,
+                })
                 self._cr.commit()
-        
+
         return True
