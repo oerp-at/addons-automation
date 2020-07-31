@@ -128,30 +128,29 @@ class TaskStatus(object):
             self.progress_path = ""
 
         else:
-            secret = self.task.env["automation.task.secret"].search(
-                [("task_id", "=", task.id)]
+            cookie = self.task.env["automation.task.cookie"].search(
+                [("task_id", "=", task.id)],
+                limit=1
             )
-            if not secret:
+            if not cookie:
                 raise Warning(
-                    _("No scecret for task %s [%s] was generated")
+                    _("No cookie for task %s [%s] was generated")
                     % (self.task, self.task.id)
                 )
-            else:
-                secret = secret[0].secret
-
+           
             baseurl = self.task.env["ir.config_parameter"].get_param("web.base.url")
             if not baseurl:
                 raise Warning(_("Cannot determine base url"))
 
             # init path
             self.log_path = urlparse.urljoin(
-                baseurl, "http/log/%s/%s" % (task.id, secret)
+                baseurl, "automation/log/%s/%s" % (task.id, cookie.cookie)
             )
             self.stage_path = urlparse.urljoin(
-                baseurl, "http/stage/%s/%s" % (task.id, secret)
+                baseurl, "automation/stage/%s/%s" % (task.id, cookie.cookie)
             )
             self.progress_path = urlparse.urljoin(
-                baseurl, "http/progress/%s/%s" % (task.id, secret)
+                baseurl, "automation/progress/%s/%s" % (task.id, cookie.cookie)
             )
 
         # setup root stage
@@ -397,12 +396,25 @@ class AutomationTask(models.Model):
         readonly=True,
     )
 
+    puuid = fields.Char("Process UUID",
+        index=True)
+
+    exe_type = fields.Selection([("c","Cron"),
+                                 ("e","External")],
+                                 default="c",
+                                 string="Execution Type",
+                                 index=True)
+
+    exe_uuid = fields.Char("Execution UUID", 
+        help="External execution uuid.",
+        index=True)    
+
     total_logs = fields.Integer(compute="_total_logs")
     total_stages = fields.Integer(compute="_total_stages")
     total_warnings = fields.Integer(compute="_total_warnings")
 
     task_id = fields.Many2one("automation.task", "Task", compute="_task_id")
-
+  
     start_after_task_id = fields.Many2one(
         "automation.task",
         "Start after task",
@@ -423,7 +435,22 @@ class AutomationTask(models.Model):
         help="The parent task, after *this* task was started"
     )
 
-    puuid = fields.Char("Process UUID")
+    post_task_ids = fields.One2many(
+        "automation.task",
+        "start_after_task_id",
+        "Post Tasks",
+        help="Tasks which are started after this task.",
+        readonly=True    
+    )
+
+    child_task_ids = fields.One2many(
+        "automation.task",
+        "parent_id",
+        "Child Tasks",
+        help="Tasks which already started after this task.",
+        readonly=True    
+    )
+    
 
     def _task_id(self):
         for obj in self:
@@ -525,34 +552,42 @@ class AutomationTask(models.Model):
 
     def _task_get_list(self):
         self.ensure_one()
+
         task_id = self.id
         _cr = self._cr
-        _cr.execute("""WITH RECURSIVE subtasks AS ( 
+        _cr.execute("""WITH RECURSIVE task(id) AS ( 
                 SELECT
                     id
                 FROM automation_task t
                 WHERE 
-                    id = %s
+                    t.id = %s
                 UNION
                     SELECT
-                        t.id,
-                    FROM automation_task t
-                    INNER JOIN subtasks st ON st.start_after_task_id = t.id
-            ) 
-            SELECT %s
-            UNION
-            SELECT id FROM subtasks
+                        st.id
+                    FROM automation_task st
+                    INNER JOIN task pt ON st.start_after_task_id = pt.id
+            )             
+            SELECT id FROM task          
             """
-         , (task_id, task_id))
-        
+         , (task_id, ))
+
         task_ids = [r[0] for r in _cr.fetchall()]
         return self.browse(task_ids)
 
+    def _task_get_after_tasks(self):
+        self.ensure_one()
+        return self.search([("start_after_task_id", "=", self.id)])
+
     def _task_add_after_last(self, task):
-        """ Add task after this """
+        """ Add task after this, if it is already
+            queued it will be not queued twice """
         self.ensure_one()
         if task:
-            task.start_after_task_id = self._task_get_list()[-1]
+            tasklist = self._task_get_list()
+            if not task in tasklist:
+                task.write({
+                    "start_after_task_id": tasklist[-1].id
+                })           
 
     def _task_insert_after(self, task):
         """ Insert task after this """
@@ -561,7 +596,7 @@ class AutomationTask(models.Model):
             task.start_after_task_id = task
             self.search([("start_after_task_id", "=", task.id)]).write({
                 "start_after_task_id": self.id
-            })            
+            })      
 
     def _check_execution_rights(self):
         # check rights
@@ -578,7 +613,7 @@ class AutomationTask(models.Model):
             if task.state == "queued":
                 task.state = "cancel"
         return True
-    
+   
     def action_refresh(self):
         return True
 
@@ -611,14 +646,21 @@ class AutomationTask(models.Model):
         }
 
     def _task_enqueue(self):
-        """ queue task """        
-        # add cron entry
-        cron = self.cron_id
-        if not cron:
-            cron = (self.env["ir.cron"].sudo().create(
-                self._get_cron_values()))
+        """ queue task """     
+        # check if it is a cron task
+        if self.exe_type == "c":
+            cron = self.cron_id
+            if not cron:
+                cron = (self.env["ir.cron"].sudo().create(
+                    self._get_cron_values()))
+            else:
+                cron.write(self._get_cron_values())
         else:
-            cron.write(self._get_cron_values())
+            # unlink cron, if it is not
+            # a cron task anymore     
+            cron = self.cron_id
+            if cron:
+                cron.unlink()
 
         # set stages inactive
         self._cr.execute(
@@ -629,10 +671,12 @@ class AutomationTask(models.Model):
         # set queued
         self.write({
             "state": "queued",
-            "parent_id": None,
+            "parent_id": self.start_after_task_id.id,
+            "start_after_task_id": None,
+            "start_after": None,
             "cron_id": cron.id,
             "puuid": str(uuid.uuid4())
-        }) 
+        })
 
     @api.model
     def _cleanup_tasks(self):
@@ -876,3 +920,16 @@ class AutomationTaskLog(models.Model):
     )
     code = fields.Char("Code", index=True)
     data = fields.Json("Data")
+
+
+class TaskCookie(models.Model):
+    _name = "automation.task.cookie"
+    _description = "Task Cookie"
+    _rec_name = "task_id"
+
+    task_id = fields.Many2one(
+        "automation.task", "Task", requird=True, ondelete="cascade", index=True
+    )
+    cookie = fields.Char(
+        "Cookie", required=True, default=lambda self: str(uuid.uuid4()), index=True
+    )
