@@ -1,25 +1,15 @@
+# -*- coding: utf-8 -*--
+# License LGPL-3 or later (http://www.gnu.org/licenses/lgpl).
+
 {
     'name': 'Automation',
     'version': '13.0.1.0.0',
-    'summary': 'Provide business and devop automation framework',
+    'summary': 'Provide an automation framework',
     'category': 'Generic Modules',
-    'author': 'funkring',
-    'maintainers': ['funkring'],
+    'author': 'Odoo Community Association (OCA)',
+    'maintainers': ['mreisenhofer'],
     'website': 'https://github.com/oerp-at',
     'license': 'LGPL-3',
-    'contributors': [
-        'funkring',
-    ],
-    'depends': [
-        'util_time'
-    ],
-    'external_dependencies': {
-        'python': [
-            '',
-        ],
-    },
-    'data': [
-        '',
-    ],
+    'depends': ['util_time'],
     'installable': True
 }

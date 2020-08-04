@@ -4,10 +4,12 @@
 import time
 import uuid
 import logging
+import json
+import requests
 
 from odoo import api, fields, models, SUPERUSER_ID, _
-from odoo import exceptions
 
+# pylint: disable=invalid-name
 _logger = logging.getLogger(__name__)
 
 
@@ -29,14 +31,8 @@ class TaskLogger:
         self.errors = 0
         self.warnings = 0
 
-    def log(self,
-            message,
-            pri="i",
-            obj=None,
-            ref=None,
-            progress=None,
-            code=None,
-            data=None):
+    # pylint: disable=unused-argument
+    def log(self, message, pri="i", obj=None, ref=None, progress=None, code=None, data=None):
         if pri == "i":
             self.logger.info(message)
         elif pri == "e":
@@ -107,12 +103,20 @@ class TaskLogger:
 
 
 class TaskStatus(object):
-    
-    def __init__(self, task, total=1, local=False, logger=None, logging=False):
+    """ task status object """
+    def __init__(self, task, total=1, local=False, logger=None, log=False):
+        """ construct a new task status object
+            :param task: The related task
+            :param int total: The stage count
+            :param bool local: Write all transaction within one transaction
+            :param logger: The logger to use
+            :param bool log: Log to logger also
+        """
+
         self.task = task
 
         self.logger = logger
-        if not self.logger and logging:
+        if not self.logger and log:
             self.logger = _logger
 
         self.local = local
@@ -128,30 +132,23 @@ class TaskStatus(object):
             self.progress_path = ""
 
         else:
-            cookie = self.task.env["automation.task.cookie"].search(
-                [("task_id", "=", task.id)],
-                limit=1
-            )
-            if not cookie:
-                raise Warning(
-                    _("No cookie for task %s [%s] was generated")
-                    % (self.task, self.task.id)
-                )
-           
+            token = self.task.env["automation.task.token"].search([("task_id", "=", task.id)], limit=1).token
+            if not token:
+                raise Warning(_("No token for task %s [%s] was generated") % (self.task, self.task.id))
+
             baseurl = self.task.env["ir.config_parameter"].get_param("web.base.url")
             if not baseurl:
                 raise Warning(_("Cannot determine base url"))
+            if baseurl.endswith("/"):
+                baseurl = baseurl[:-1]
 
             # init path
-            self.log_path = urlparse.urljoin(
-                baseurl, "automation/log/%s/%s" % (task.id, cookie.cookie)
-            )
-            self.stage_path = urlparse.urljoin(
-                baseurl, "automation/stage/%s/%s" % (task.id, cookie.cookie)
-            )
-            self.progress_path = urlparse.urljoin(
-                baseurl, "automation/progress/%s/%s" % (task.id, cookie.cookie)
-            )
+            def prepare_url(path):
+                return "%s/%s?db=%s&token=%s" % (baseurl, path, self.env.cr.dbname, self.token)
+
+            self.log_path = prepare_url("automation/log")
+            self.stage_path = prepare_url("automation/stage")
+            self.progress_path = prepare_url("automation/progress")
 
         # setup root stage
         self.root_stage_id = self._create_stage({"name": task.name, "total": total})
@@ -171,31 +168,33 @@ class TaskStatus(object):
         self.warnings = 0
 
         # loop
-        self._loopInc = 0.0
-        self._loopProgress = 0.0
+        self._loop_inc = 0.0
+        self._loop_progress = 0.0
+
+    def _post_data(self, url, data):
+        data = {"params": data}
+        res = requests.post(url, data=data)
+        res.raise_for_status()
+        return res
 
     def _post_progress(self, data):
         if self.local:
-            self.stage_obj.browse(data["stage_id"]).write(
-                {
-                    "task_id": self.task.id,
-                    "status": data["status"],
-                    "progress": data["progress"],
-                }
-            )
+            self.stage_obj.browse(data["stage_id"]).write({
+                "task_id": data["task_id"],
+                "status": data["status"],
+                "progress": data["progress"],
+            })
         else:
-            res = requests.post(self.progress_path, data)
-            res.raise_for_status()
+            self._post_data(self.progress_path, data)
 
     def _post_stage(self, data):
         if self.logger:
-            self.logger.info("= Stage %s" % data["name"])
+            self.logger.info("= Stage %s", data["name"])
         if self.local:
             data["task_id"] = self.task.id
             return self.stage_obj.create(data).id
         else:
-            res = requests.post(self.stage_path, data=data)
-            res.raise_for_status()
+            res = self._post_data(self.stage_path, data)
             return int(res.text)
 
     def _post_log(self, data):
@@ -206,24 +205,21 @@ class TaskStatus(object):
             if ref:
                 ref_parts = ref.split(",")
                 ref_obj = ref_parts[0]
-                ref_id = long(ref_parts[1])
+                ref_id = int(ref_parts[1])
                 name = self.log_obj.env[ref_obj].browse(ref_id).name_get()[0]
                 data["message"] = "%s (%s,'%s')" % (data["message"], name[0], name[1])
 
             # add progress
             if "progress" in data:
                 progress = data.pop("progress", 0.0)
-                self.task.env["automation.task.stage"].browse(self.stage_id).write(
-                    {"progress": progress}
-                )
+                self.task.env["automation.task.stage"].browse(self.stage_id).write({"progress": progress})
 
             data["task_id"] = self.task.id
             self.log_obj.create(data)
 
         # otherwise forward log to server
         else:
-            res = requests.post(self.log_path, data=data)
-            res.raise_for_status()
+            self._post_data(self.log_path, data)
 
         # log message
         if self.logger:
@@ -244,15 +240,13 @@ class TaskStatus(object):
             elif pri == "a":
                 self.logger.critical(message)
 
-    def log(
-        self, message, pri="i", obj=None, ref=None, progress=None, code=None, data=None
-    ):
+    def log(self, message, pri="i", obj=None, ref=None, progress=None, code=None, data=None):
         if pri == "e":
             self.errors += 1
         elif pri == "w":
             self.warnings += 1
 
-        if not data is None and not isinstance(data, basestring):
+        if not data is None and not isinstance(data, str):
             data = json.dumps(data)
 
         values = {
@@ -289,19 +283,19 @@ class TaskStatus(object):
     def logx(self, message, pri="x", **kwargs):
         self.log(message, pri=pri, **kwargs)
 
-    def initLoop(self, loopCount, status=None):
-        self._loopProgress = 0.0
-        if not loopCount:
-            self._loopProgress = 100.0
-            self._loopInc = 0.0
+    def initLoop(self, loop_count, status=None):
+        self._loop_progress = 0.0
+        if not loop_count:
+            self._loop_progress = 100.0
+            self._loop_inc = 0.0
         else:
-            self._loopInc = 100.0 / loopCount
-            self._loopProgress = 0.0
-        self.progress(status, self._loopProgress)
+            self._loop_inc = 100.0 / loop_count
+            self._loop_progress = 0.0
+        self.progress(status, self._loop_progress)
 
     def nextLoop(self, status=None, step=1):
-        self._loopProgress += self._loopInc * step
-        self.progress(status, self._loopProgress)
+        self._loop_progress += self._loop_inc * step
+        self.progress(status, self._loop_progress)
 
     def progress(self, status, progress):
         values = {
@@ -337,19 +331,15 @@ class TaskStatus(object):
             self.parent_stage_id, self.stage_id = self.stage_stack.pop()
 
     def close(self):
-        self._post_progress(
-            {"stage_id": self.root_stage_id, "status": _("Done"), "progress": 100.0}
-        )
+        self._post_progress({"stage_id": self.root_stage_id, "status": _("Done"), "progress": 100.0})
 
 
 class AutomationTask(models.Model):
     _name = "automation.task"
     _description = "Automation Task"
     _order = "id asc"
-    
-    name = fields.Char(required=True,
-                       readonly=True,
-                       states={"draft": [("readonly", False)]})
+
+    name = fields.Char(required=True, readonly=True, states={"draft": [("readonly", False)]})
     state_change = fields.Datetime(
         required=True,
         readonly=True,
@@ -358,18 +348,18 @@ class AutomationTask(models.Model):
     )
 
     state = fields.Selection([
-            ("draft", "Draft"),
-            ("queued", "Queued"),
-            ("run", "Running"),
-            ("cancel", "Canceled"),
-            ("failed", "Failed"),
-            ("done", "Done"),
-        ],
-        required=True,
-        index=True,
-        readonly=True,
-        default="draft",
-        copy=False)
+        ("draft", "Draft"),
+        ("queued", "Queued"),
+        ("run", "Running"),
+        ("cancel", "Canceled"),
+        ("failed", "Failed"),
+        ("done", "Done"),
+    ],
+                             required=True,
+                             index=True,
+                             readonly=True,
+                             default="draft",
+                             copy=False)
 
     progress = fields.Float(readonly=True, compute="_compute_progress")
     error = fields.Text(readonly=True, copy=False)
@@ -383,10 +373,7 @@ class AutomationTask(models.Model):
 
     res_model = fields.Char("Resource Model", index=True, readonly=True)
     res_id = fields.Integer("Resource ID", index=True, readonly=True)
-    res_ref = fields.Reference(_list_all_models,
-                               string="Resource",
-                               compute="_compute_res_ref",
-                               readonly=True)
+    res_ref = fields.Reference(_list_all_models, string="Resource", compute="_compute_res_ref", readonly=True)
     cron_id = fields.Many2one(
         "ir.cron",
         "Scheduled Job",
@@ -396,63 +383,47 @@ class AutomationTask(models.Model):
         readonly=True,
     )
 
-    puuid = fields.Char("Process UUID",
-        index=True)
+    puuid = fields.Char("Process UUID", index=True)
 
-    exe_type = fields.Selection([("c","Cron"),
-                                 ("e","External")],
-                                 default="c",
-                                 string="Execution Type",
-                                 index=True)
+    exe_type = fields.Selection([("c", "Cron"), ("e", "External")], default="c", string="Execution Type", index=True)
 
-    exe_uuid = fields.Char("Execution UUID", 
-        help="External execution uuid.",
-        index=True)    
+    exe_uuid = fields.Char("Execution UUID", help="External execution uuid.", index=True)
 
-    total_logs = fields.Integer(compute="_total_logs")
-    total_stages = fields.Integer(compute="_total_stages")
-    total_warnings = fields.Integer(compute="_total_warnings")
+    total_logs = fields.Integer(compute="_compute_total_logs")
+    total_stages = fields.Integer(compute="_compute_total_stages")
+    total_warnings = fields.Integer(compute="_compute_total_warnings")
 
-    task_id = fields.Many2one("automation.task", "Task", compute="_task_id")
-  
+    task_id = fields.Many2one("automation.task", "Task", compute="_compute_task_id")
+
     start_after_task_id = fields.Many2one(
         "automation.task",
         "Start after task",
         readonly=True,
         index=True,
         ondelete="restrict",
-        help="Start *this* task after the specified task, was set to null after run state is set."
-    )    
-    start_after = fields.Datetime(
-        help="Start *this* task after the specified date/time.")
-    
-    parent_id = fields.Many2one(
-        "automation.task",
-        "Parent",
-        readonly=True,
-        index=True,
-        ondelete="set null",
-        help="The parent task, after *this* task was started"
-    )
+        help="Start *this* task after the specified task, was set to null after run state is set.")
+    start_after = fields.Datetime(help="Start *this* task after the specified date/time.")
 
-    post_task_ids = fields.One2many(
-        "automation.task",
-        "start_after_task_id",
-        "Post Tasks",
-        help="Tasks which are started after this task.",
-        readonly=True    
-    )
+    parent_id = fields.Many2one("automation.task",
+                                "Parent",
+                                readonly=True,
+                                index=True,
+                                ondelete="set null",
+                                help="The parent task, after *this* task was started")
 
-    child_task_ids = fields.One2many(
-        "automation.task",
-        "parent_id",
-        "Child Tasks",
-        help="Tasks which already started after this task.",
-        readonly=True    
-    )
-    
+    post_task_ids = fields.One2many("automation.task",
+                                    "start_after_task_id",
+                                    "Post Tasks",
+                                    help="Tasks which are started after this task.",
+                                    readonly=True)
 
-    def _task_id(self):
+    child_task_ids = fields.One2many("automation.task",
+                                     "parent_id",
+                                     "Child Tasks",
+                                     help="Tasks which already started after this task.",
+                                     readonly=True)
+
+    def _compute_task_id(self):
         for obj in self:
             self.task_id = obj
 
@@ -496,32 +467,31 @@ class AutomationTask(models.Model):
                     WHERE t.id IN %%s
                 """ % table_name, (task_ids, ))
 
-                values.update(
-                    dict([(i, "%s,%s" % (res_model, r))
-                          for (i, r) in _cr.fetchall()]))
+                values.update(dict([(i, "%s,%s" % (res_model, r)) for (i, r) in _cr.fetchall()]))
 
         for obj in self:
             obj.res_ref = values.get(obj.id, None)
 
-    def _total_logs(self):
+    def _compute_total_logs(self):
         _cr = self._cr
-        _cr.execute(
-            "SELECT task_id, COUNT(*) FROM automation_task_log WHERE task_id IN %s GROUP BY 1",
-            (tuple(self.ids), ))
+        _cr.execute("SELECT task_id, COUNT(*) FROM automation_task_log WHERE task_id IN %s GROUP BY 1",
+                    (tuple(self.ids), ))
         values = dict(_cr.fetchall())
         for obj in self:
             obj.total_logs = values.get(obj.id) or 0
 
-    def _total_warnings(self):
+    def _compute_total_warnings(self):
         _cr = self._cr
         _cr.execute(
-            "SELECT task_id, COUNT(*) FROM automation_task_log WHERE pri IN ('a','e','w','x') AND task_id IN %s GROUP BY 1",
-            (tuple(self.ids), ))
+            """SELECT task_id, COUNT(*) FROM automation_task_log
+            WHERE pri IN ('a','e','w','x')
+              AND task_id IN %s GROUP BY 1
+            """, (tuple(self.ids), ))
         values = dict(_cr.fetchall())
         for obj in self:
             obj.total_logs = values.get(obj.id) or 0
 
-    def _total_stages(self):
+    def _compute_total_stages(self):
         res = dict.fromkeys(self.ids, 0)
         _cr = self._cr
         _cr.execute(
@@ -555,21 +525,21 @@ class AutomationTask(models.Model):
 
         task_id = self.id
         _cr = self._cr
-        _cr.execute("""WITH RECURSIVE task(id) AS ( 
+        _cr.execute(
+            """WITH RECURSIVE task(id) AS (
                 SELECT
                     id
                 FROM automation_task t
-                WHERE 
+                WHERE
                     t.id = %s
                 UNION
                     SELECT
                         st.id
                     FROM automation_task st
                     INNER JOIN task pt ON st.start_after_task_id = pt.id
-            )             
-            SELECT id FROM task          
-            """
-         , (task_id, ))
+            )
+            SELECT id FROM task
+            """, (task_id, ))
 
         task_ids = [r[0] for r in _cr.fetchall()]
         return self.browse(task_ids)
@@ -585,26 +555,20 @@ class AutomationTask(models.Model):
         if task:
             tasklist = self._task_get_list()
             if not task in tasklist:
-                task.write({
-                    "start_after_task_id": tasklist[-1].id
-                })           
+                task.write({"start_after_task_id": tasklist[-1].id})
 
     def _task_insert_after(self, task):
         """ Insert task after this """
         self.ensure_one()
         if task:
             task.start_after_task_id = task
-            self.search([("start_after_task_id", "=", task.id)]).write({
-                "start_after_task_id": self.id
-            })      
+            self.search([("start_after_task_id", "=", task.id)]).write({"start_after_task_id": self.id})
 
     def _check_execution_rights(self):
         # check rights
         if self.owner_id.id != self._uid and not self.user_has_groups(
                 "automation.group_automation_manager,base.group_system"):
-            raise Warning(
-                _("Not allowed. You have to be the owner or an automation manager"
-            ))
+            raise Warning(_("Not allowed. You have to be the owner or an automation manager"))
 
     def action_cancel(self):
         for task in self:
@@ -613,7 +577,7 @@ class AutomationTask(models.Model):
             if task.state == "queued":
                 task.state = "cancel"
         return True
-   
+
     def action_refresh(self):
         return True
 
@@ -646,18 +610,17 @@ class AutomationTask(models.Model):
         }
 
     def _task_enqueue(self):
-        """ queue task """     
+        """ queue task """
         # check if it is a cron task
         if self.exe_type == "c":
             cron = self.cron_id
             if not cron:
-                cron = (self.env["ir.cron"].sudo().create(
-                    self._get_cron_values()))
+                cron = (self.env["ir.cron"].sudo().create(self._get_cron_values()))
             else:
                 cron.write(self._get_cron_values())
         else:
             # unlink cron, if it is not
-            # a cron task anymore     
+            # a cron task anymore
             cron = self.cron_id
             if cron:
                 cron.unlink()
@@ -681,8 +644,7 @@ class AutomationTask(models.Model):
     @api.model
     def _cleanup_tasks(self):
         # clean up cron tasks
-        self._cr.execute(
-            "DELETE FROM ir_cron WHERE task_id IS NOT NULL AND NOT active")
+        self._cr.execute("DELETE FROM ir_cron WHERE task_id IS NOT NULL AND NOT active")
         return True
 
     def action_queue(self):
@@ -691,7 +653,7 @@ class AutomationTask(models.Model):
             task._check_execution_rights()
             if task.state in ("draft", "cancel", "failed", "done"):
                 # sudo task
-                task.sudo()._task_enqueue()            
+                task.sudo()._task_enqueue()
         return True
 
     def _task_options(self):
@@ -719,7 +681,6 @@ class AutomationTask(models.Model):
 
         return options
 
-         
     @api.model
     def _process_task(self, task_id):
         task = self.browse(task_id)
@@ -734,7 +695,7 @@ class AutomationTask(models.Model):
                 # check if it is a singleton task
                 # if already another task run, requeue
                 # don't process this task
-                if task_options.get("singleton"):                      
+                if task_options.get("singleton"):
                     # check concurrent
                     self._cr.execute(
                         "SELECT MIN(id) FROM automation_task WHERE res_model=%s AND state IN ('queued','run')",
@@ -757,6 +718,7 @@ class AutomationTask(models.Model):
                     "parent_id": task.start_after_task_id.id
                 })
                 # commit after start
+                # pylint: disable=invalid-commit
                 self._cr.commit()
 
                 # run task
@@ -772,15 +734,11 @@ class AutomationTask(models.Model):
                 taskc.close()
 
                 # update status
-                task.write({
-                    "state_change": date_obj._current_datetime_str(),
-                    "state": "done",
-                    "error": None
-                })
+                task.write({"state_change": date_obj._current_datetime_str(), "state": "done", "error": None})
 
                 # commit after finish
                 self._cr.commit()
-              
+
             except Exception as e:
                 # rollback on error
                 self._cr.rollback()
@@ -795,7 +753,7 @@ class AutomationTask(models.Model):
                     if not error and hasattr(e, "message"):
                         error = e.message
                 except:
-                    _logger.exception("Error parsing failed")                 
+                    _logger.exception("Error parsing failed")
 
                 #if there is no message
                 if not error:
@@ -807,6 +765,7 @@ class AutomationTask(models.Model):
                     "state": "failed",
                     "error": error,
                 })
+                # pylint: disable=invalid-commit
                 self._cr.commit()
 
         return True
@@ -818,14 +777,12 @@ class AutomationTaskStage(models.Model):
     _order = "id asc"
     _rec_name = "complete_name"
 
-    complete_name = fields.Char("Name", compute="_complete_name")
-    complete_progress = fields.Float(
-        "Progess %", readonly=True, compute="_complete_progress"
-    )
+    complete_name = fields.Char("Name", compute="_compute_name")
+    complete_progress = fields.Float("Progess %", readonly=True, compute="_compute_progress")
 
-    name = fields.Char("Name", readonly=True, required=True)
+    name = fields.Char(readonly=True, required=True)
     progress = fields.Float("Progress %", readonly=True)
-    status = fields.Char("Status")
+    status = fields.Char()
 
     task_id = fields.Many2one(
         "automation.task",
@@ -835,41 +792,37 @@ class AutomationTaskStage(models.Model):
         required=True,
         ondelete="cascade",
     )
-    parent_id = fields.Many2one(
-        "automation.task.stage", "Parent Stage", readonly=True, index=True
-    )
-    total = fields.Integer("Total", readonly=True)
+    parent_id = fields.Many2one("automation.task.stage", "Parent Stage", readonly=True, index=True)
+    total = fields.Integer(readonly=True)
 
-    child_ids = fields.One2many(
-        "automation.task.stage", "parent_id", string="Substages", copy=False
-    )
+    child_ids = fields.One2many("automation.task.stage", "parent_id", string="Substages", copy=False)
 
-    @api.one
-    def _complete_name(self):
-        name = []
-        stage = self
-        while stage:
-            name.append(stage.name)
-            stage = stage.parent_id
-        self.complete_name = " / ".join(reversed(name))
+    def _compute_name(self):
+        for obj in self:
+            name = []
+            stage = obj
+            while stage:
+                name.append(stage.name)
+                stage = stage.parent_id
+            obj.complete_name = " / ".join(reversed(name))
 
-    @api.model
-    def _calc_progress(self, stage):
-        progress = stage.progress
+    def _calc_progress(self):
+        self.ensure_one()
+        progress = self.progress
         if progress >= 100.0:
             return progress
 
-        childs = stage.child_ids
-        total = max(stage.total, len(childs)) or 1
+        childs = self.child_ids
+        total = max(self.total, len(childs)) or 1
 
         for child in childs:
-            progress += self._calc_progress(child) / total
+            progress += child._calc_progress() / total
 
         return min(round(progress), 100.0)
 
-    @api.one
-    def _complete_progress(self):
-        self.complete_progress = self._calc_progress(self)
+    def _compute_progress(self):
+        for obj in self:
+            self.complete_progress = obj._calc_progress()
 
 
 class AutomationTaskLog(models.Model):
@@ -912,24 +865,16 @@ class AutomationTaskLog(models.Model):
         readonly=True,
     )
 
- 
-
-    message = fields.Text("Message", readonly=True)
-    ref = fields.Reference(
-        _list_all_models, string="Reference", readonly=True, index=True
-    )
-    code = fields.Char("Code", index=True)
-    data = fields.Json("Data")
+    message = fields.Text(readonly=True)
+    ref = fields.Reference(_list_all_models, string="Reference", readonly=True, index=True)
+    code = fields.Char(index=True)
+    data = fields.Json()
 
 
-class TaskCookie(models.Model):
-    _name = "automation.task.cookie"
-    _description = "Task Cookie"
+class TaskToken(models.Model):
+    _name = "automation.task.token"
+    _description = "Task Token"
     _rec_name = "task_id"
 
-    task_id = fields.Many2one(
-        "automation.task", "Task", requird=True, ondelete="cascade", index=True
-    )
-    cookie = fields.Char(
-        "Cookie", required=True, default=lambda self: str(uuid.uuid4()), index=True
-    )
+    task_id = fields.Many2one("automation.task", "Task", requird=True, ondelete="cascade", index=True)
+    token = fields.Char(required=True, default=lambda self: str(uuid.uuid4()), index=True)
