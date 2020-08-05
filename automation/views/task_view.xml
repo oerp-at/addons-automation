@@ -14,61 +14,61 @@
             <field name="state" widget="statusbar" statusbar_visible="draft,queued,run,done" statusbar_colors='{"draft":"blue"}'/>   
           </header>
           <sheet>
-            <div class="oetitle oe_left">
-              <div class="oe_edit_only">
-                <label for="name"/>
-              </div>
-              <h1>
-                <field name="name" default_focus="1" placeholder="Name"/>
-              </h1>                              
-            </div>
-            <div class="oe_right">
-              <button type="object" icon="gtk-normal" name="action_refresh" class="oe_inline" attrs="{'invisible':['|',('state','=','failed'),('state','=','done')]}"/>
-              <button type="object" icon="gtk-no" name="action_refresh"  class="oe_inline" attrs="{'invisible':[('state','!=','failed')]}"/>
-              <button type="object" icon="gtk-yes" name="action_refresh"  class="oe_inline" attrs="{'invisible':[('state','!=','done')]}"/>
-            </div>
-            <div class="oe_right oe_button_box" name="buttons"> 
-                <button type="action" 
+            <div class="oe_button_box" name="button_box">            
+              <button type="object" 
                       class="oe_stat_button"
                       id="stage_button"
                       icon="fa-tasks"
-                      name="%(automation.action_task_stage)d"
-                      context="{'search_default_task_id': task_id, 'default_task_id': task_id}">
-                      <div><strong><field name="total_stages"/></strong><br/>Stages</div>
+                      name="action_stage">
+                      <field name="total_stages" widget="statinfo" string="Stages"/>
               </button>
-              <button type="action" 
+              <button type="object" 
+                      class="oe_stat_button" 
+                      id="log_button" 
+                      icon="fa-bars" 
+                      name="action_log">
+                      <field name="total_logs" widget="statinfo" string="Logs"/>
+              </button>
+              <button type="object" 
                       class="oe_stat_button"
-                      id="log_button"
-                      icon="fa-bars"
-                      name="%(automation.action_task_log)d"
-                      context="{'search_default_task_id': task_id, 'default_task_id': task_id}">
-                      <div><strong><field name="total_logs"/></strong><br/>Logs</div>
+                      id="warning_button"
+                      icon="fa-exclamation-triangle"
+                      name="action_warning"
+                      attrs="{'invisible':[('total_warnings','=',0)]}">
+                      <field name="total_warnings" widget="statinfo" string="Warnings"/>
               </button>
-              <button type="action" 
+              <button type="object" 
                       class="oe_stat_button"
                       id="error_button"
-                      icon="fa-exclamation-triangle"
-                      name="%(automation.action_task_log)d"
-                      context="{'search_default_task_id': task_id, 'default_task_id': task_id, 'search_default_warning': 1}">
-                      <div><strong><field name="total_warnings"/></strong><br/>Warnings</div>
+                      icon="fa-exclamation-circle"
+                      name="action_error"
+                      attrs="{'invisible':[('total_errors','=',0)]}">
+                      <field name="total_errors" widget="statinfo" string="Errors"/>
+              </button>
+              <button type="object" 
+                      class="oe_inline"
+                      id="stage_button"
+                      icon="fa-refresh"
+                      name="action_refresh">
               </button>
             </div>
             <group name="task_specific">
-              <group>
+              <group name="task_name">
+                <field name="name"/>
                 <field name="owner_id"/>
-                <field name="res_ref"/>
+                <field name="res_ref" attrs="{'invisible':[('res_ref','=',False)]}"/>
                 <field name="task_id" invisible="1" required="0"/>                
               </group>
-              <group>
-                <field name="progress" widget="progressbar"/>
+              <group name="task_progress">
+                <field name="progress" widget="progressbar"/>       
                 <field name="state_change"/>
-                <field name="cron_id"/> 
+                <field name="cron_id" attrs="{'invisible':[('cron_id','=',False)]}"/> 
                 <field name="start_after" attrs="{'invisible':[('start_after','=',False)]}"/>
                 <field name="start_after_task_id" attrs="{'invisible':[('start_after_task_id','=',False)]}"/>                
               </group>
             </group>
             <notebook>
-              <page string="Error">
+              <page string="Error" attrs="{'invisible':[('state','!=','failed')]}">
                 <field name="error"/>
               </page>            
             </notebook>
@@ -80,8 +80,8 @@
     <record id="tree_automation_task" model="ir.ui.view">
       <field name="name">automation.tree_automation_task</field>
       <field name="model">automation.task</field>
-      <field name="arch" type="xml">
-        <tree string="Tasks" colors="blue:state == 'draft';gray:state == 'cancel';green:state == 'queued';orange:state == 'run';red:state == 'failed'">
+      <field name="arch" type="xml">        
+        <tree string="Tasks" decoration-muted="state=='cancel'" decoration-info="state=='draft'" decoration-bf="state=='queued'" decoration-warning="state=='run'" decoration-danger="state=='failed'">
           <field name="name"/>
           <field name="owner_id"/>
           <field name="res_ref"/>
@@ -106,17 +106,16 @@
           <filter name="task_failed" string="Failed" domain="[('state','=','failed')]"/>
           <filter name="task_done" string="Done" domain="[('state','=','done')]"/>
           <group expand="0" string="Group By...">
-            <filter string="Owner" context="{'group_by': 'owner_id'}"/>
-            <filter string="State" context="{'group_by': 'state'}"/>
+            <filter name="by_owner" string="Owner" context="{'group_by': 'owner_id'}"/>
+            <filter name="by_state" string="State" context="{'group_by': 'state'}"/>
           </group>
         </search>
       </field>
     </record>
 
     <record id="action_automation_task" model="ir.actions.act_window">
-      <field name="name">Automation Task</field>
-      <field name="res_model">automation.task</field>
-      <field name="view_type">form</field>
+      <field name="name">Automation Task</field>      
+      <field name="res_model">automation.task</field>      
       <field name="view_mode">tree,form</field>
     </record>
 

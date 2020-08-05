@@ -31,8 +31,12 @@
     <record id="tree_task_log" model="ir.ui.view">
       <field name="name">automation.tree_task_log</field>
       <field name="model">automation.task.log</field>
-      <field name="arch" type="xml">
-        <tree string="Logs" create="false" delete="false" colors="blue:pri == 'n';gray:pri == 'd';red:pri in ['x','a','e'];orange:pri == 'w'"> 
+      <field name="arch" type="xml">        
+        <tree string="Logs" create="false" delete="false"
+              decoration-muted="pri=='d'" 
+              decoration-info="pri=='n'" 
+              decoration-warning="pri=='w'" 
+              decoration-danger="pri in ['x','a','e']"> 
           <field name="create_date"/>
           <field name="task_id"/>
           <field name="stage_id"/>
@@ -52,23 +56,26 @@
           <field name="code"/>
           <field name="task_id"/>
           <field name="stage_id"/>
-          <filter string="Warning" name="warning" domain="[('pri','in',['a','e','w','x'])]"/>
-          <filter string="Info" name="info" domain="[('pri','in',['n','i'])]"/>
-          <filter string="Debug" name="debug" domain="[('pri','=','d')]"/>
-          <group expand="0" string="Group By...">
-            <filter string="Task" context="{'group_by': 'task_id'}"/>
-            <filter string="Stage" context="{'group_by': 'stage_id'}"/>
-            <filter string="Priority" context="{'group_by': 'pri'}"/>
-            <filter string="Code" context="{'group_by': 'code'}"/>
+          <filter name="exception" string="Exception" domain="[('pri','in',['a','e','x'])]"/>
+          <filter name="alert" string="Alert" domain="[('pri','=','a')]"/>
+          <filter name="emergency" string="Emergency" domain="[('pri','=','a')]"/>
+          <filter name="error" string="Error" domain="[('pri','=','e')]"/>          
+          <filter name="warning" string="Warning" domain="[('pri','=','w')]"/>
+          <filter name="info"  string="Info" domain="[('pri','in',['n','i'])]"/>
+          <filter name="debug" string="Debug"  domain="[('pri','=','d')]"/>
+          <group string="Group By..." expand="0">
+            <filter name="by_task" string="Task" context="{'group_by': 'task_id'}"/>
+            <filter name="by_stage" string="Stage" context="{'group_by': 'stage_id'}"/>
+            <filter name="by_priority" string="Priority" context="{'group_by': 'pri'}"/>
+            <filter name="by_code" string="Code" context="{'group_by': 'code'}"/>
           </group>
         </search>
       </field>
     </record>
 
     <record id="action_task_log" model="ir.actions.act_window">
-      <field name="name">Log</field>
+      <field name="name">Log</field>      
       <field name="res_model">automation.task.log</field>
-      <field name="view_type">form</field>
       <field name="view_mode">tree,form</field>
     </record>
 

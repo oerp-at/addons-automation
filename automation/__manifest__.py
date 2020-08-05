@@ -11,5 +11,13 @@
     'website': 'https://github.com/oerp-at',
     'license': 'LGPL-3',
     'depends': ['util_time'],
+    'data': [
+        'security/security.xml',
+        'security/ir.model.access.csv',
+        'views/task_log.xml',
+        'views/stage_view.xml',
+        'views/cron_view.xml',
+        'views/task_view.xml'
+    ],
     'installable': True
 }

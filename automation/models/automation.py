@@ -8,6 +8,7 @@ import json
 import requests
 
 from odoo import api, fields, models, SUPERUSER_ID, _
+from odoo.addons.util_json.fields import Json
 
 # pylint: disable=invalid-name
 _logger = logging.getLogger(__name__)
@@ -344,7 +345,7 @@ class AutomationTask(models.Model):
         required=True,
         readonly=True,
         copy=False,
-        default=lambda self: self.env["util.time"]._currentDateTime(),
+        default=lambda self: self.env["util.time"]._current_datetime_str(),
     )
 
     state = fields.Selection([
@@ -392,6 +393,7 @@ class AutomationTask(models.Model):
     total_logs = fields.Integer(compute="_compute_total_logs")
     total_stages = fields.Integer(compute="_compute_total_stages")
     total_warnings = fields.Integer(compute="_compute_total_warnings")
+    total_errors = fields.Integer(compute="_compute_total_errors")
 
     task_id = fields.Many2one("automation.task", "Task", compute="_compute_task_id")
 
@@ -423,6 +425,12 @@ class AutomationTask(models.Model):
                                      help="Tasks which already started after this task.",
                                      readonly=True)
 
+    server_action_id = fields.Many2one("ir.actions.server",
+                                        "Server Action",
+                                        ondelete="restrict",
+                                        index=True,
+                                        readonly=True)
+
     def _compute_task_id(self):
         for obj in self:
             self.task_id = obj
@@ -452,6 +460,7 @@ class AutomationTask(models.Model):
             """SELECT res_model, ARRAY_AGG(id)
             FROM automation_task
             WHERE id IN %s
+            GROUP BY 1
         """, (tuple(self.ids), ))
 
         values = {}
@@ -480,17 +489,29 @@ class AutomationTask(models.Model):
         for obj in self:
             obj.total_logs = values.get(obj.id) or 0
 
-    def _compute_total_warnings(self):
+    def _compute_total_warnings(self):     
         _cr = self._cr
         _cr.execute(
             """SELECT task_id, COUNT(*) FROM automation_task_log
-            WHERE pri IN ('a','e','w','x')
+            WHERE pri = 'w'
+              AND task_id IN %s 
+            GROUP BY 1
+            """, (tuple(self.ids), ))
+        values = dict(_cr.fetchall())
+        for obj in self:
+            obj.total_warnings = values.get(obj.id) or 0
+
+    def _compute_total_errors(self):
+        _cr = self._cr
+        _cr.execute(
+            """SELECT task_id, COUNT(*) FROM automation_task_log
+            WHERE pri IN ('a','e','x')
               AND task_id IN %s GROUP BY 1
             """, (tuple(self.ids), ))
         values = dict(_cr.fetchall())
         for obj in self:
-            obj.total_logs = values.get(obj.id) or 0
-
+            obj.total_errors = values.get(obj.id) or 0
+    
     def _compute_total_stages(self):
         res = dict.fromkeys(self.ids, 0)
         _cr = self._cr
@@ -578,6 +599,44 @@ class AutomationTask(models.Model):
                 task.state = "cancel"
         return True
 
+    def action_stage(self):
+        return {
+            "display_name": _("Stages"),
+            "res_model": "automation.task.stage",
+            "type": "ir.actions.act_window",            
+            "view_mode": "tree,form",
+            "domain": [("task_id", "=", self.id)]
+        }
+
+    def action_log(self):
+        return {
+            "display_name": _("Logs"),
+            "res_model": "automation.task.log",
+            "type": "ir.actions.act_window",            
+            "view_mode": "tree,form",
+            "domain": [("task_id", "=", self.id)]
+        }
+
+    def action_warning(self):
+        return {
+            "display_name": _("Logs"),
+            "res_model": "automation.task.log",
+            "type": "ir.actions.act_window",            
+            "view_mode": "tree,form",
+            "domain": [("task_id", "=", self.id),
+                       ("pri", "=", "w")]
+        }
+
+    def action_error(self):
+        return {
+            "display_name": _("Logs"),
+            "res_model": "automation.task.log",
+            "type": "ir.actions.act_window",            
+            "view_mode": "tree,form",
+            "domain": [("task_id", "=", self.id),
+                       ("pri", "in", ("e", "a", "x"))]
+        }
+
     def action_refresh(self):
         return True
 
@@ -590,7 +649,7 @@ class AutomationTask(models.Model):
         # start after is set
         # use start_after date instead of next call
         nextcall = self.env["util.time"]._current_datetime_str()
-        if nextcall < self.start_after:
+        if self.start_after and nextcall < self.start_after:
             nextcall = self.start_after
 
         # new cron entry
@@ -777,7 +836,7 @@ class AutomationTaskStage(models.Model):
     _order = "id asc"
     _rec_name = "complete_name"
 
-    complete_name = fields.Char("Name", compute="_compute_name")
+    complete_name = fields.Char("Title", compute="_compute_name")
     complete_progress = fields.Float("Progess %", readonly=True, compute="_compute_progress")
 
     name = fields.Char(readonly=True, required=True)
@@ -868,7 +927,7 @@ class AutomationTaskLog(models.Model):
     message = fields.Text(readonly=True)
     ref = fields.Reference(_list_all_models, string="Reference", readonly=True, index=True)
     code = fields.Char(index=True)
-    data = fields.Json()
+    data = Json()
 
 
 class TaskToken(models.Model):

@@ -42,17 +42,16 @@
           <field name="name"/>
           <field name="task_id"/>
           <group expand="0" string="Group By...">
-            <filter string="Task" name="group_task" context="{'group_by': 'task_id'}"/>
-            <filter string="Parent Stage" name="group_parent" context="{'group_by': 'parent_id'}"/>
+            <filter name="by_task" string="Task"  context="{'group_by': 'task_id'}"/>
+            <filter name="by_parent" string="Parent Stage" context="{'group_by': 'parent_id'}"/>
           </group>
         </search>
       </field>
     </record>
 
     <record id="action_task_stage" model="ir.actions.act_window">
-      <field name="name">Stage</field>
-      <field name="res_model">automation.task.stage</field>
-      <field name="view_type">form</field>
+      <field name="name">Stage</field>      
+      <field name="res_model">automation.task.stage</field>      
       <field name="view_mode">tree,form</field>
     </record>
 
