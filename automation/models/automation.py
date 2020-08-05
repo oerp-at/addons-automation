@@ -426,10 +426,10 @@ class AutomationTask(models.Model):
                                      readonly=True)
 
     server_action_id = fields.Many2one("ir.actions.server",
-                                        "Server Action",
-                                        ondelete="restrict",
-                                        index=True,
-                                        readonly=True)
+                                       "Server Action",
+                                       ondelete="restrict",
+                                       index=True,
+                                       readonly=True)
 
     def _compute_task_id(self):
         for obj in self:
@@ -739,10 +739,10 @@ class AutomationTask(models.Model):
             options.update(res_options)
 
         return options
-
-    @api.model
-    def _process_task(self, task_id):
-        task = self.browse(task_id)
+ 
+    def _process_task(self):
+        self.ensure_one()
+        task = self
         date_obj = self.env["util.date"]
 
         if task and task.state == "queued":
@@ -762,7 +762,7 @@ class AutomationTask(models.Model):
                     )
 
                     active_task_id = self._cr.fetchone()[0]
-                    if active_task_id and active_task_id < task_id:
+                    if active_task_id and active_task_id < task.id:
                         # queue task after running
                         task.write({"start_after_task_id": active_task_id})
                         return True
@@ -803,7 +803,7 @@ class AutomationTask(models.Model):
                 self._cr.rollback()
 
                 _logger.exception("Task execution failed")
-                task = self.browse(task_id)  # reload task after rollback
+                task = self.browse(task.id)  # reload task after rollback
 
                 # securely try to get message
                 error = None
