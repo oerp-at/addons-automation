@@ -13,3 +13,6 @@ class TestTask(TransactionCase):
             "name": "Test"
         })
         task.action_queue()
+
+        self.assertTrue(task.cron_id, "Check if cron was set")
+        self.assertTrue(task.action_id, "Check if action was set")

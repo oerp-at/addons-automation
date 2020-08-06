@@ -7,9 +7,9 @@ from odoo import fields, models
 class IrActionsServer(models.Model):
     _inherit = "ir.actions.server"
 
-    state = fields.Selection(selection_add=[("automation_task", "Automation Task")])
-    automation_task_id = fields.Many2one("automation.task", "Task", ondelete="cascade")
+    state = fields.Selection(selection_add=[("task", "Automation Task")])
+    task_id = fields.Many2one("automation.task", "Task", ondelete="cascade", readonly=True)
 
-    def run_action_automation_task_multi(self):
+    def run_action_task_multi(self):
         self.automation_task_id._process_task()
         return False

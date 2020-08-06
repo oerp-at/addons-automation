@@ -425,11 +425,7 @@ class AutomationTask(models.Model):
                                      help="Tasks which already started after this task.",
                                      readonly=True)
 
-    server_action_id = fields.Many2one("ir.actions.server",
-                                       "Server Action",
-                                       ondelete="restrict",
-                                       index=True,
-                                       readonly=True)
+    action_id = fields.Many2one("ir.actions.server", "Server Action", ondelete="restrict", index=True, readonly=True)
 
     def _compute_task_id(self):
         for obj in self:
@@ -489,7 +485,7 @@ class AutomationTask(models.Model):
         for obj in self:
             obj.total_logs = values.get(obj.id) or 0
 
-    def _compute_total_warnings(self):     
+    def _compute_total_warnings(self):
         _cr = self._cr
         _cr.execute(
             """SELECT task_id, COUNT(*) FROM automation_task_log
@@ -511,7 +507,7 @@ class AutomationTask(models.Model):
         values = dict(_cr.fetchall())
         for obj in self:
             obj.total_errors = values.get(obj.id) or 0
-    
+
     def _compute_total_stages(self):
         res = dict.fromkeys(self.ids, 0)
         _cr = self._cr
@@ -603,7 +599,7 @@ class AutomationTask(models.Model):
         return {
             "display_name": _("Stages"),
             "res_model": "automation.task.stage",
-            "type": "ir.actions.act_window",            
+            "type": "ir.actions.act_window",
             "view_mode": "tree,form",
             "domain": [("task_id", "=", self.id)]
         }
@@ -612,7 +608,7 @@ class AutomationTask(models.Model):
         return {
             "display_name": _("Logs"),
             "res_model": "automation.task.log",
-            "type": "ir.actions.act_window",            
+            "type": "ir.actions.act_window",
             "view_mode": "tree,form",
             "domain": [("task_id", "=", self.id)]
         }
@@ -621,20 +617,18 @@ class AutomationTask(models.Model):
         return {
             "display_name": _("Logs"),
             "res_model": "automation.task.log",
-            "type": "ir.actions.act_window",            
+            "type": "ir.actions.act_window",
             "view_mode": "tree,form",
-            "domain": [("task_id", "=", self.id),
-                       ("pri", "=", "w")]
+            "domain": [("task_id", "=", self.id), ("pri", "=", "w")]
         }
 
     def action_error(self):
         return {
             "display_name": _("Logs"),
             "res_model": "automation.task.log",
-            "type": "ir.actions.act_window",            
+            "type": "ir.actions.act_window",
             "view_mode": "tree,form",
-            "domain": [("task_id", "=", self.id),
-                       ("pri", "in", ("e", "a", "x"))]
+            "domain": [("task_id", "=", self.id), ("pri", "in", ("e", "a", "x"))]
         }
 
     def action_refresh(self):
@@ -660,29 +654,50 @@ class AutomationTask(models.Model):
             "interval_number": 1,
             "nextcall": nextcall,
             "numbercall": 1,
-            "model": self._name,
-            "function": "_process_task",
-            "args": "(%s,)" % self.id,
             "active": True,
-            "priority": 1000 + self.id,
+            "priority": 100000 + self.id,
             "task_id": self.id,
+            "ir_actions_server_id": self.action_id.id
         }
+
+    def _get_task_values(self):
+        self.ensure_one()
+        return {
+            "name": "Task: %s" % self.name,
+            "state": "task",
+            "sequence": 100000 + self.id,
+            "model_id": self.env["ir.model"].search([("model", "=", "automation.task")], limit=1).id,
+            "usage": "ir_cron",
+            "task_id": self.id
+        }        
 
     def _task_enqueue(self):
         """ queue task """
+
         # check if it is a cron task
         if self.exe_type == "c":
-            cron = self.cron_id
-            if not cron:
-                cron = (self.env["ir.cron"].sudo().create(self._get_cron_values()))
+            if not self.action_id:
+                self.action_id = self.env["ir.actions.server"].create(self._get_task_values())
             else:
-                cron.write(self._get_cron_values())
+                self.action_id.write(self._get_task_values())
+
+            if not self.cron_id:
+                self.cron_id = self.env["ir.cron"].create(self._get_cron_values())
+            else:
+                self.cron_id.write(self._get_cron_values())
         else:
             # unlink cron, if it is not
             # a cron task anymore
             cron = self.cron_id
             if cron:
+                self.cron_id = None
                 cron.unlink()
+
+            # unlink action
+            action = self.action_id
+            if action:
+                self.action_id = None
+                action.unlink()
 
         # set stages inactive
         self._cr.execute(
@@ -696,8 +711,8 @@ class AutomationTask(models.Model):
             "parent_id": self.start_after_task_id.id,
             "start_after_task_id": None,
             "start_after": None,
-            "cron_id": cron.id,
-            "puuid": str(uuid.uuid4())
+            "puuid": str(uuid.uuid4()),
+            "exe_uuid": None
         })
 
     @api.model
@@ -739,7 +754,7 @@ class AutomationTask(models.Model):
             options.update(res_options)
 
         return options
- 
+
     def _process_task(self):
         self.ensure_one()
         task = self
