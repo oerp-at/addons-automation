@@ -23,7 +23,7 @@ class IrHttp(models.AbstractModel):
             token = env['automation.task.token'].sudo().search([('token', '=', token)], limit=1)
             if not token:
                 raise BadRequest("Token not exists")
-            elif not request.session.uid and request.session.login != 'anonymous':
+            elif request.session.uid:
                 raise BadRequest("There should no user been set")
 
         return True

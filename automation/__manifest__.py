@@ -10,7 +10,7 @@
     'maintainers': ['mreisenhofer'],
     'website': 'https://github.com/oerp-at',
     'license': 'LGPL-3',
-    'depends': ['util_time'],
+    'depends': ['base', 'util_time'],
     'data': [
         'security/security.xml',
         'security/ir.model.access.csv',

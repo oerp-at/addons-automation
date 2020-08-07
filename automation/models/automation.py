@@ -135,7 +135,7 @@ class TaskStatus(object):
         else:
             token = self.task.env["automation.task.token"].search([("task_id", "=", task.id)], limit=1).token
             if not token:
-                raise Warning(_("No token for task %s [%s] was generated") % (self.task, self.task.id))
+                raise Warning(_("No token for task %s [%s] was generated") % (self.task.name, self.task.id))
 
             baseurl = self.task.env["ir.config_parameter"].get_param("web.base.url")
             if not baseurl:
@@ -145,7 +145,7 @@ class TaskStatus(object):
 
             # init path
             def prepare_url(path):
-                return "%s/%s?db=%s&token=%s" % (baseurl, path, self.env.cr.dbname, self.token)
+                return "%s/%s?db=%s&token=%s" % (baseurl, path, task.env.cr.dbname, token)
 
             self.log_path = prepare_url("automation/log")
             self.stage_path = prepare_url("automation/stage")
@@ -705,6 +705,14 @@ class AutomationTask(models.Model):
             (self.id, ),
         )
 
+        # (re)create token
+        token_obj = self.env["automation.task.token"]
+        token_obj.search([("task_id", "=", self.id)]).unlink()
+        token_obj.create({
+            "task_id": self.id
+        })
+        
+
         # set queued
         self.write({
             "state": "queued",
@@ -758,7 +766,7 @@ class AutomationTask(models.Model):
     def _process_task(self):
         self.ensure_one()
         task = self
-        date_obj = self.env["util.date"]
+        date_obj = self.env["util.time"]
 
         if task and task.state == "queued":
             try:

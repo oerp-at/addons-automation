@@ -6,11 +6,12 @@ from odoo import registry as registry_get
 
 class TaskLogController(http.Controller):
     """ task log controller """
-    
+     
     @http.route(
-        ["/automation/log"],
+        "/automation/log",
         type="json",
         auth="automation_task",
+        csrf=False,
         methods=["POST"],
     )
     def log(self, db, token, progress=None, **kwargs):
@@ -32,9 +33,10 @@ class TaskLogController(http.Controller):
             return env["automation.task.log"].create(kwargs).id
             
     @http.route(
-        ["/automation/stage"],
+        "/automation/stage",
         type="json",
         auth="automation_task",
+        csrf=False,
         methods=["POST"],
     )
     def stage(self, db, token, **kwargs):
@@ -44,10 +46,11 @@ class TaskLogController(http.Controller):
             return env["automation.task.stage"].create(kwargs).id
 
     @http.route(
-        ["/automation/progress"],
+        "/automation/progress",
         type="json",
         auth="automation_task",
-        methods=["POST"],
+        csrf=False,
+        methods=["POST"]
     )
     def progress(self, db, token, stage_id, **kwargs):
         stage_id = int(stage_id)
