@@ -114,14 +114,34 @@ class TaskStatus(object):
             :param bool log: Log to logger also
         """
 
+             
+        # init stack
+        self.stage_stack = []
+        self.last_status = None
+        self.errors = 0
+        self.warnings = 0
+
+        # init loop
+        self._loop_inc = 0.0
+        self._loop_progress = 0.0        
+        
+        # init task
         self.task = task
 
+        # init stage name
+        self.parent_stage_name = ""
+        self.stage_name = task.name
+
+        # init logger
         self.logger = logger
         if not self.logger and log:
             self.logger = _logger
 
-        self.local = local
+        # init db
+        self.db = task.env.cr.dbname
 
+        # init remote/local     
+        self.local = local
         if self.local:
             self.stage_obj = self.task.env["automation.task.stage"]
             self.log_obj = self.task.env["automation.task.log"]
@@ -131,10 +151,12 @@ class TaskStatus(object):
             self.log_path = ""
             self.stage_path = ""
             self.progress_path = ""
+            self.headers = {}
+            self.token = None
 
         else:
-            token = self.task.env["automation.task.token"].search([("task_id", "=", task.id)], limit=1).token
-            if not token:
+            self.token = self.task.env["automation.task.token"].search([("task_id", "=", task.id)], limit=1).token
+            if not self.token:
                 raise Warning(_("No token for task %s [%s] was generated") % (self.task.name, self.task.id))
 
             baseurl = self.task.env["ir.config_parameter"].get_param("web.base.url")
@@ -143,38 +165,33 @@ class TaskStatus(object):
             if baseurl.endswith("/"):
                 baseurl = baseurl[:-1]
 
+
             # init path
-            def prepare_url(path):
-                return "%s/%s?db=%s&token=%s" % (baseurl, path, task.env.cr.dbname, token)
+            def prepare_url(path):                
+                return "%s/%s?db=%s&token=%s" % (baseurl, path, self.db, self.token)
+                #return "%s/%s" % (baseurl, path)
 
             self.log_path = prepare_url("automation/log")
             self.stage_path = prepare_url("automation/stage")
             self.progress_path = prepare_url("automation/progress")
+            
+            # prepare header
+            self.headers = {
+                'Accept': 'application/form'
+            }
 
         # setup root stage
+        # first call to remote
         self.root_stage_id = self._create_stage({"name": task.name, "total": total})
         self.parent_stage_id = self.root_stage_id
         self.stage_id = self.root_stage_id
 
-        self.parent_stage_name = ""
-        self.stage_name = task.name
-
         # first log
+        # second call to remote
         self.log(_("Started"))
 
-        # stack
-        self.stage_stack = []
-        self.last_status = None
-        self.errors = 0
-        self.warnings = 0
-
-        # loop
-        self._loop_inc = 0.0
-        self._loop_progress = 0.0
-
-    def _post_data(self, url, data):
-        data = {"params": data}
-        res = requests.post(url, data=data)
+    def _post_data(self, url, data):       
+        res = requests.post(url, data=data, headers=self.headers)
         res.raise_for_status()
         return res
 
@@ -191,15 +208,16 @@ class TaskStatus(object):
     def _post_stage(self, data):
         if self.logger:
             self.logger.info("= Stage %s", data["name"])
-        if self.local:
-            data["task_id"] = self.task.id
+        data["task_id"] = self.task.id
+        if self.local:            
             return self.stage_obj.create(data).id
-        else:
+        else:            
             res = self._post_data(self.stage_path, data)
             return int(res.text)
 
     def _post_log(self, data):
         # check for local logging
+        data["task_id"] = self.task.id
         if self.local:
 
             ref = data.get("ref")
@@ -214,8 +232,7 @@ class TaskStatus(object):
             if "progress" in data:
                 progress = data.pop("progress", 0.0)
                 self.task.env["automation.task.stage"].browse(self.stage_id).write({"progress": progress})
-
-            data["task_id"] = self.task.id
+            
             self.log_obj.create(data)
 
         # otherwise forward log to server

@@ -9,7 +9,7 @@ class TaskLogController(http.Controller):
      
     @http.route(
         "/automation/log",
-        type="json",
+        type="http",
         auth="automation_task",
         csrf=False,
         methods=["POST"],
@@ -30,11 +30,11 @@ class TaskLogController(http.Controller):
                 except ValueError:
                     pass
             # log
-            return env["automation.task.log"].create(kwargs).id
+            return str(env["automation.task.log"].create(kwargs).id)
             
     @http.route(
         "/automation/stage",
-        type="json",
+        type="http",
         auth="automation_task",
         csrf=False,
         methods=["POST"],
@@ -43,11 +43,11 @@ class TaskLogController(http.Controller):
         registry = registry_get(db)
         with registry.cursor() as cr:
             env = Environment(cr, SUPERUSER_ID, {})
-            return env["automation.task.stage"].create(kwargs).id
+            return str(env["automation.task.stage"].create(kwargs).id)
 
     @http.route(
         "/automation/progress",
-        type="json",
+        type="http",
         auth="automation_task",
         csrf=False,
         methods=["POST"]
@@ -60,4 +60,4 @@ class TaskLogController(http.Controller):
             env["automation.task.stage"].browse(stage_id).write(
                 kwargs
             )
-        return True
+        return ""
