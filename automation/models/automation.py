@@ -870,6 +870,59 @@ class AutomationTask(models.Model):
         return True
 
 
+class AutomationTaskMixin(models.AbstractModel):
+    _name = "automation.task.mixin"
+    _description = "Automation Task Proxy"
+    _inherits = {"automation.task": "task_id"}
+
+    task_id = fields.Many2one("automation.task", "Task", required=True, index=True, ondelete="cascade")
+
+    @api.model_create_multi
+    @api.returns('self', lambda value: value.id)
+    def create(self, vals_list):
+        res = super(AutomationTaskMixin, self).create(vals_list)
+        res.res_model = self._name
+        res.res_id = res.id
+        return res
+
+    def unlink(self):
+        # search inherited
+        _cr = self._cr
+        ids = self.ids
+        _cr.execute("SELECT task_id FROM %s WHERE id IN %%s AND task_id IS NOT NULL" % self._table, (tuple(ids),))
+        task_ids = [r[0] for r in _cr.fetchall()]
+        # unlink task
+        res = super(AutomationTaskMixin, self).unlink()
+        # unlink inherited
+        self.env["automation.task"].browse(task_ids).unlink()
+        return res
+
+    def action_queue(self):
+        return self.task_id.action_queue()
+
+    def action_cancel(self):
+        return self.task_id.action_cancel()
+
+    def action_refresh(self):
+        return self.task_id.action_refresh()
+
+    def action_reset(self):
+        return self.task_id.action_reset()
+
+    def _run(self, taskc):
+        """ Test Task """
+        self.ensure_one()
+        for stage in range(1, 10):
+            taskc.stage("Stage %s" % stage)
+
+            for proc in range(1, 100, 10):
+                taskc.log("Processing %s" % stage)
+                taskc.progress("Processing %s" % stage, proc)
+                time.sleep(1)
+
+            taskc.done()
+
+
 class AutomationTaskStage(models.Model):
     _name = "automation.task.stage"
     _description = "Task Stage"
